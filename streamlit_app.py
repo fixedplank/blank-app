@@ -293,26 +293,35 @@ def get_cached_last_matches(team_id: int):
     df = _load_csv(CACHE_LAST_MATCHES)
     if df.empty:
         return None
-    m = df[df["team_id"] == int(team_id)]
+    m = df[df["team_id"] == int(team_id)].copy()
     if m.empty:
         return None
-    if not _is_fresh(m.iloc[0].get("cached_date", ""), ttl_days=1):
+    if not _is_fresh(m["cached_date"].iloc[0], ttl_days=1):
         return None
-    return m.drop(columns=["team_id", "cached_date"], errors="ignore").to_dict("records")
+    # Sort by raw unix timestamp if available, otherwise fall back to date string
+    if "timestamp" in m.columns:
+        m = m.sort_values("timestamp", ascending=False)
+    else:
+        m["_dt"] = pd.to_datetime(m["date"], errors="coerce")
+        m = m.sort_values("_dt", ascending=False).drop(columns=["_dt"])
+    m["date"] = pd.to_datetime(m["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    return m.drop(columns=["team_id", "cached_date", "timestamp"], errors="ignore").to_dict("records")
 
 
 def save_last_matches(team_id: int, events: list):
-    """Store flattened event metadata (not full event dicts) for shotmap/heatmap selectors."""
+    """Store flattened event metadata sorted by date desc (most recent first)."""
     rows = []
     for e in events:
         if e.get("status", {}).get("type") != "finished":
             continue
+        ts    = e.get("startTimestamp", 0)
+        date  = pd.Timestamp(ts, unit="s").strftime("%Y-%m-%d")
         h     = e.get("homeScore", {}).get("display", "?")
         a     = e.get("awayScore", {}).get("display", "?")
-        date  = pd.Timestamp(e["startTimestamp"], unit="s").strftime("%Y-%m-%d")
         rows.append({
             "team_id":    int(team_id),
             "match_id":   e["id"],
+            "timestamp":  int(ts),
             "date":       date,
             "home_team":  e["homeTeam"]["name"],
             "away_team":  e["awayTeam"]["name"],
@@ -322,7 +331,8 @@ def save_last_matches(team_id: int, events: list):
         })
     if not rows:
         return
-    df_new  = pd.DataFrame(rows)
+    df_new = pd.DataFrame(rows)
+    df_new = df_new.sort_values("timestamp", ascending=False).head(20)  # keep 20 most recent
     existing = _load_csv(CACHE_LAST_MATCHES)
     if not existing.empty:
         existing = existing[existing["team_id"] != int(team_id)]
@@ -357,7 +367,7 @@ def get_team_league(team_id, team_name, force=False):
         if cached:
             st.markdown('<span class="cache-badge">💾 CACHED — league detect</span>', unsafe_allow_html=True)
             return cached
-    r      = requests.get(f"{BASE_URL}/teams/get-last-matches", headers=HEADERS, params={"teamId": team_id})
+    r      = requests.get(f"{BASE_URL}/teams/get-last-matches", headers=HEADERS, params={"teamId": team_id, "page": 0})
     events = r.json().get("events", [])
     # Also cache the last-matches data while we have it
     save_last_matches(int(team_id), events)
@@ -444,30 +454,37 @@ def get_team_stats(team_id, team_name, tournament_id, season_id, force_update=Fa
 
 
 def get_last_matches_for_team(team_id: int, force=False):
-    """Fetch last finished matches for a team independently. Returns all cached rows."""
+    """Fetch last finished matches for a team independently. Returns rows sorted recent-first."""
     if not force:
         cached = get_cached_last_matches(int(team_id))
         if cached:
             st.markdown('<span class="cache-badge">💾 CACHED — last matches</span>', unsafe_allow_html=True)
             return cached
-    r      = requests.get(f"{BASE_URL}/teams/get-last-matches", headers=HEADERS, params={"teamId": team_id})
-    events = [e for e in r.json().get("events", []) if e.get("status", {}).get("type") == "finished"]
+    # page=0 is the most recent page on SofaScore
+    r      = requests.get(f"{BASE_URL}/teams/get-last-matches", headers=HEADERS,
+                          params={"teamId": team_id, "page": 0})
+    all_events = r.json().get("events", [])
+    events = [e for e in all_events if e.get("status", {}).get("type") == "finished"]
+    # Sort by timestamp descending so most recent is first
+    events.sort(key=lambda e: e.get("startTimestamp", 0), reverse=True)
     save_last_matches(int(team_id), events)
     st.markdown('<span class="api-badge">🌐 API — last matches</span>', unsafe_allow_html=True)
     rows = []
     for e in events:
+        ts   = e.get("startTimestamp", 0)
+        date = pd.Timestamp(ts, unit="s").strftime("%Y-%m-%d")
         h    = e.get("homeScore", {}).get("display", "?")
         a    = e.get("awayScore", {}).get("display", "?")
-        date = pd.Timestamp(e["startTimestamp"], unit="s").strftime("%Y-%m-%d")
         rows.append({
             "match_id":   e["id"],
+            "timestamp":  int(ts),
             "date":       date,
             "home_team":  e["homeTeam"]["name"],
             "away_team":  e["awayTeam"]["name"],
             "home_score": h,
             "away_score": a,
         })
-    return rows  # all rows — callers slice as needed
+    return rows  # sorted recent-first, callers slice as needed
 
 
 def get_h2h_matches(team_a_id, team_b_id, team_a_name, team_b_name, last_n=10, force=False):
@@ -478,11 +495,11 @@ def get_h2h_matches(team_a_id, team_b_id, team_a_name, team_b_name, last_n=10, f
             return cached
 
     # Fetch last matches for both teams (also cached individually)
-    r        = requests.get(f"{BASE_URL}/teams/get-last-matches", headers=HEADERS, params={"teamId": team_a_id})
+    r        = requests.get(f"{BASE_URL}/teams/get-last-matches", headers=HEADERS, params={"teamId": team_a_id, "page": 0})
     events_a = {e["id"]: e for e in r.json().get("events", []) if e.get("status", {}).get("type") == "finished"}
     save_last_matches(int(team_a_id), list(events_a.values()))
 
-    r        = requests.get(f"{BASE_URL}/teams/get-last-matches", headers=HEADERS, params={"teamId": team_b_id})
+    r        = requests.get(f"{BASE_URL}/teams/get-last-matches", headers=HEADERS, params={"teamId": team_b_id, "page": 0})
     events_b = {e["id"]: e for e in r.json().get("events", []) if e.get("status", {}).get("type") == "finished"}
     save_last_matches(int(team_b_id), list(events_b.values()))
 
