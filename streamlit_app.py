@@ -444,7 +444,7 @@ def get_team_stats(team_id, team_name, tournament_id, season_id, force_update=Fa
 
 
 def get_last_matches_for_team(team_id: int, force=False):
-    """Return list of finished match dicts for a team (for shotmap/heatmap)."""
+    """Fetch last finished matches for a team independently. Returns all cached rows."""
     if not force:
         cached = get_cached_last_matches(int(team_id))
         if cached:
@@ -454,7 +454,6 @@ def get_last_matches_for_team(team_id: int, force=False):
     events = [e for e in r.json().get("events", []) if e.get("status", {}).get("type") == "finished"]
     save_last_matches(int(team_id), events)
     st.markdown('<span class="api-badge">🌐 API — last matches</span>', unsafe_allow_html=True)
-    # Return as flat dicts (same shape as cached version)
     rows = []
     for e in events:
         h    = e.get("homeScore", {}).get("display", "?")
@@ -468,7 +467,7 @@ def get_last_matches_for_team(team_id: int, force=False):
             "home_score": h,
             "away_score": a,
         })
-    return rows[:10]
+    return rows  # all rows — callers slice as needed
 
 
 def get_h2h_matches(team_a_id, team_b_id, team_a_name, team_b_name, last_n=10, force=False):
@@ -843,6 +842,146 @@ def show_heatmap(team_id, team_name, team_key, force=False):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# LAST 10 GAMES DISPLAY
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _result_badge(team_name: str, home_team: str, away_team: str,
+                  home_score, away_score) -> str:
+    """Return W / D / L coloured HTML for a team given a match row."""
+    try:
+        hs = int(home_score)
+        as_ = int(away_score)
+    except (ValueError, TypeError):
+        return '<span style="color:#607080">?</span>'
+
+    is_home = team_name.strip().lower() == home_team.strip().lower()
+    if hs == as_:
+        label, color = "D", "#c0a030"
+    elif (is_home and hs > as_) or (not is_home and as_ > hs):
+        label, color = "W", "#30b060"
+    else:
+        label, color = "L", "#c03040"
+    return f'<span style="color:{color};font-weight:700">{label}</span>'
+
+
+def show_last_10_games(team_a_id, team_b_id, team_a_name, team_b_name, force=False):
+    st.markdown('<div class="section-header">📅 Last 10 Games</div>', unsafe_allow_html=True)
+
+    matches_a = get_last_matches_for_team(int(team_a_id), force=force)
+    matches_b = get_last_matches_for_team(int(team_b_id), force=force)
+
+    tab_a, tab_b = st.tabs([f"🏠 {team_a_name}", f"✈️ {team_b_name}"])
+
+    for tab, team_name, matches in [
+        (tab_a, team_a_name, matches_a),
+        (tab_b, team_b_name, matches_b),
+    ]:
+        with tab:
+            if not matches:
+                st.info(f"No recent match data found for {team_name}.")
+                continue
+
+            rows = []
+            for m in matches[:10]:
+                hs  = m.get("home_score", "?")
+                as_ = m.get("away_score", "?")
+                badge = _result_badge(team_name, m["home_team"], m["away_team"], hs, as_)
+                # Opponent
+                if m["home_team"].strip().lower() == team_name.strip().lower():
+                    venue    = "H"
+                    opponent = m["away_team"]
+                else:
+                    venue    = "A"
+                    opponent = m["home_team"]
+                rows.append({
+                    "Date":     m["date"],
+                    "H/A":      venue,
+                    "Opponent": opponent,
+                    "Score":    f"{hs}–{as_}",
+                    "Result":   badge,
+                })
+
+            if not rows:
+                st.info("No finished matches available.")
+                continue
+
+            df = pd.DataFrame(rows)
+
+            # Render with HTML for coloured Result column
+            html_rows = ""
+            for _, r in df.iterrows():
+                venue_color = "#4090c0" if r["H/A"] == "H" else "#a06040"
+                html_rows += (
+                    f"<tr>"
+                    f"<td style='padding:5px 10px;color:#8aa0b8'>{r['Date']}</td>"
+                    f"<td style='padding:5px 10px;color:{venue_color};font-weight:700'>{r['H/A']}</td>"
+                    f"<td style='padding:5px 10px;color:#c8d6e5'>{r['Opponent']}</td>"
+                    f"<td style='padding:5px 10px;font-family:IBM Plex Mono,monospace;color:#d0eaff'>{r['Score']}</td>"
+                    f"<td style='padding:5px 10px;text-align:center'>{r['Result']}</td>"
+                    f"</tr>"
+                )
+
+            st.markdown(f"""
+<table style="width:100%;border-collapse:collapse;font-family:IBM Plex Mono,monospace;font-size:0.82rem;
+              background:#0b1422;border:1px solid #152030;border-radius:3px">
+  <thead>
+    <tr style="border-bottom:1px solid #1e3050">
+      <th style="padding:6px 10px;color:#5a80a0;text-align:left">Date</th>
+      <th style="padding:6px 10px;color:#5a80a0;text-align:left">H/A</th>
+      <th style="padding:6px 10px;color:#5a80a0;text-align:left">Opponent</th>
+      <th style="padding:6px 10px;color:#5a80a0;text-align:left">Score</th>
+      <th style="padding:6px 10px;color:#5a80a0;text-align:center">Result</th>
+    </tr>
+  </thead>
+  <tbody>{html_rows}</tbody>
+</table>
+""", unsafe_allow_html=True)
+
+            # Quick form summary
+            results = []
+            for m in matches[:10]:
+                hs  = m.get("home_score", "?")
+                as_ = m.get("away_score", "?")
+                try:
+                    hs_i, as_i = int(hs), int(as_)
+                    is_home = m["home_team"].strip().lower() == team_name.strip().lower()
+                    if hs_i == as_i:
+                        results.append("D")
+                    elif (is_home and hs_i > as_i) or (not is_home and as_i > hs_i):
+                        results.append("W")
+                    else:
+                        results.append("L")
+                except (ValueError, TypeError):
+                    pass
+
+            if results:
+                w = results.count("W"); d = results.count("D"); l = results.count("L")
+                gf_list, ga_list = [], []
+                for m in matches[:10]:
+                    try:
+                        hs_i = int(m.get("home_score", 0))
+                        as_i = int(m.get("away_score", 0))
+                        is_home = m["home_team"].strip().lower() == team_name.strip().lower()
+                        gf_list.append(hs_i if is_home else as_i)
+                        ga_list.append(as_i if is_home else hs_i)
+                    except (ValueError, TypeError):
+                        pass
+                avg_gf = round(sum(gf_list) / len(gf_list), 2) if gf_list else "—"
+                avg_ga = round(sum(ga_list) / len(ga_list), 2) if ga_list else "—"
+                form_str = " ".join(
+                    f'<span style="color:{"#30b060" if r=="W" else "#c0a030" if r=="D" else "#c03040"}'
+                    f';font-weight:700">{r}</span>'
+                    for r in results
+                )
+                st.markdown(f"""
+<div class="math-box" style="margin-top:10px">
+<b>Form (last {len(results)} games):</b> {form_str}<br>
+W {w} · D {d} · L {l} &nbsp;|&nbsp; Avg scored: <span class="result">{avg_gf}</span> &nbsp;·&nbsp; Avg conceded: <span class="result">{avg_ga}</span>
+</div>
+""", unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # MASTER ANALYSIS
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -896,6 +1035,14 @@ def smart_analyze(team_a_input, team_b_input, show_shotmap_flag, show_heatmap_fl
 
     # ── 5. Analysis sections ──────────────────────────────────────────────────
     show_team_comparison(stats_a, stats_b)
+    st.divider()
+
+    # Explicitly fetch each team's own last matches before display (independent of H2H)
+    with st.spinner("Loading recent match history..."):
+        get_last_matches_for_team(int(team_a_id), force=force_update)
+        get_last_matches_for_team(int(team_b_id), force=force_update)
+
+    show_last_10_games(team_a_id, team_b_id, team_a_name, team_b_name, force=False)
     st.divider()
 
     with st.spinner("Loading H2H matches..."):
