@@ -18,6 +18,26 @@ HEADERS = {
 }
 BASE_URL = "https://sofascore.p.rapidapi.com"
 
+# ── Rate limiting ─────────────────────────────────────────────────────────────
+import time
+
+_last_request_time = 0.0
+RATE_LIMIT_SECONDS = 1.2   # BASIC plan: 1 req/sec — we use 1.2s for safety margin
+
+def _api_get(url: str, params: dict = None) -> dict:
+    """Throttled wrapper around requests.get — enforces RATE_LIMIT_SECONDS between calls."""
+    global _last_request_time
+    elapsed = time.time() - _last_request_time
+    if elapsed < RATE_LIMIT_SECONDS:
+        time.sleep(RATE_LIMIT_SECONDS - elapsed)
+    try:
+        r = requests.get(url, headers=HEADERS, params=params or {})
+        _last_request_time = time.time()
+        return r.json()
+    except Exception as e:
+        _last_request_time = time.time()
+        return {}
+
 # ── Cache file paths ──────────────────────────────────────────────────────────
 CACHE_TEAM_STATS    = "team_stats_cache.csv"       # season stats per team
 CACHE_TEAM_SEARCH   = "team_search_cache.csv"      # name → id lookups
@@ -344,8 +364,7 @@ def search_team(team_name: str, force=False):
         if cached:
             st.markdown('<span class="cache-badge">💾 CACHED — search</span>', unsafe_allow_html=True)
             return cached
-    r    = requests.get(f"{BASE_URL}/teams/search", headers=HEADERS, params={"name": team_name})
-    data = r.json()
+    data = _api_get(f"{BASE_URL}/teams/search", {"name": team_name})
     teams = data.get("teams", [])
     if not teams:
         return None, None
@@ -361,8 +380,7 @@ def get_team_league(team_id, team_name, force=False):
         if cached:
             st.markdown('<span class="cache-badge">💾 CACHED — league detect</span>', unsafe_allow_html=True)
             return cached
-    r      = requests.get(f"{BASE_URL}/teams/get-last-matches", headers=HEADERS, params={"teamId": team_id, "page": 0})
-    events = r.json().get("events", [])
+    events = _api_get(f"{BASE_URL}/teams/get-last-matches", {"teamId": team_id, "page": 0}).get("events", [])
     # Also cache the last-matches data while we have it
     save_last_matches(int(team_id), events)
     st.markdown('<span class="api-badge">🌐 API — league detect</span>', unsafe_allow_html=True)
@@ -384,9 +402,7 @@ def get_league_standings(tournament_id, season_id, force=False):
         if cached is not None:
             st.markdown('<span class="cache-badge">💾 CACHED — standings</span>', unsafe_allow_html=True)
             return cached
-    r    = requests.get(f"{BASE_URL}/tournaments/get-standings", headers=HEADERS,
-                        params={"tournamentId": tournament_id, "seasonId": season_id})
-    rows = r.json().get("standings", [{}])[0].get("rows", [])
+    rows = _api_get(f"{BASE_URL}/tournaments/get-standings", {"tournamentId": tournament_id, "seasonId": season_id}).get("standings", [{}])[0].get("rows", [])
     st.markdown('<span class="api-badge">🌐 API — standings</span>', unsafe_allow_html=True)
     if not rows:
         return pd.DataFrame()
@@ -403,9 +419,7 @@ def get_league_standings(tournament_id, season_id, force=False):
 
 
 def fetch_team_stats_from_api(team_id, team_name, tournament_id, season_id):
-    r    = requests.get(f"{BASE_URL}/teams/get-statistics", headers=HEADERS,
-                        params={"teamId": team_id, "tournamentId": tournament_id, "seasonId": season_id})
-    data = r.json().get("statistics", {})
+    data = _api_get(f"{BASE_URL}/teams/get-statistics", {"teamId": team_id, "tournamentId": tournament_id, "seasonId": season_id}).get("statistics", {})
     if not data:
         return None
     matches = data.get("matches", 1) or 1
@@ -455,9 +469,7 @@ def get_last_matches_for_team(team_id: int, force=False):
             st.markdown('<span class="cache-badge">💾 CACHED — last matches</span>', unsafe_allow_html=True)
             return cached
     # page=0 is the most recent page on SofaScore
-    r      = requests.get(f"{BASE_URL}/teams/get-last-matches", headers=HEADERS,
-                          params={"teamId": team_id, "page": 0})
-    all_events = r.json().get("events", [])
+    all_events = _api_get(f"{BASE_URL}/teams/get-last-matches", {"teamId": team_id, "page": 0}).get("events", [])
     events = [e for e in all_events if e.get("status", {}).get("type") == "finished"]
     # Sort by timestamp descending so most recent is first
     events.sort(key=lambda e: e.get("startTimestamp", 0), reverse=True)
@@ -489,12 +501,10 @@ def get_h2h_matches(team_a_id, team_b_id, team_a_name, team_b_name, last_n=10, f
             return cached
 
     # Fetch last matches for both teams (also cached individually)
-    r        = requests.get(f"{BASE_URL}/teams/get-last-matches", headers=HEADERS, params={"teamId": team_a_id, "page": 0})
-    events_a = {e["id"]: e for e in r.json().get("events", []) if e.get("status", {}).get("type") == "finished"}
+    events_a = {e["id"]: e for e in _api_get(f"{BASE_URL}/teams/get-last-matches", {"teamId": team_a_id, "page": 0}).get("events", []) if e.get("status", {}).get("type") == "finished"}
     save_last_matches(int(team_a_id), list(events_a.values()))
 
-    r        = requests.get(f"{BASE_URL}/teams/get-last-matches", headers=HEADERS, params={"teamId": team_b_id, "page": 0})
-    events_b = {e["id"]: e for e in r.json().get("events", []) if e.get("status", {}).get("type") == "finished"}
+    events_b = {e["id"]: e for e in _api_get(f"{BASE_URL}/teams/get-last-matches", {"teamId": team_b_id, "page": 0}).get("events", []) if e.get("status", {}).get("type") == "finished"}
     save_last_matches(int(team_b_id), list(events_b.values()))
 
     st.markdown('<span class="api-badge">🌐 API — H2H</span>', unsafe_allow_html=True)
@@ -793,8 +803,7 @@ def show_shotmap(team_id, team_name, team_key, force=False):
     match_id = opts[chosen]
     if st.button("Fetch Shotmap", key=f"shotbtn_{team_key}"):
         with st.spinner("Fetching..."):
-            res  = requests.get(f"{BASE_URL}/matches/get-shotmap", headers=HEADERS, params={"matchId": match_id})
-            data = res.json().get("shotmap", [])
+            data = _api_get(f"{BASE_URL}/matches/get-shotmap", {"matchId": match_id}).get("shotmap", [])
         if not data:
             st.warning("No shotmap data for this match.")
             return
@@ -837,9 +846,7 @@ def show_heatmap(team_id, team_name, team_key, force=False):
     match_id = opts[chosen]
     if st.button("Fetch Heatmap", key=f"heatbtn_{team_key}"):
         with st.spinner("Fetching..."):
-            res  = requests.get(f"{BASE_URL}/matches/get-team-heatmap", headers=HEADERS,
-                                params={"matchId": match_id, "teamId": team_id})
-            data = res.json().get("heatmap", [])
+            data = _api_get(f"{BASE_URL}/matches/get-team-heatmap", {"matchId": match_id, "teamId": team_id}).get("heatmap", [])
         if not data:
             st.warning("No heatmap data for this match.")
             return
@@ -1006,13 +1013,11 @@ def smart_analyze(team_a_input, team_b_input, show_shotmap_flag, show_heatmap_fl
 
     if not team_a_id:
         st.error(f"❌ Team not found: **{team_a_input}**")
-        r = requests.get(f"{BASE_URL}/teams/search", headers=HEADERS, params={"name": team_a_input})
-        st.json(r.json())
+        st.json(_api_get(f"{BASE_URL}/teams/search", {"name": team_a_input}))
         return
     if not team_b_id:
         st.error(f"❌ Team not found: **{team_b_input}**")
-        r = requests.get(f"{BASE_URL}/teams/search", headers=HEADERS, params={"name": team_b_input})
-        st.json(r.json())
+        st.json(_api_get(f"{BASE_URL}/teams/search", {"name": team_b_input}))
         return
 
     st.success(f"✅ Found: **{team_a_name}** (ID {team_a_id})  ·  **{team_b_name}** (ID {team_b_id})")
