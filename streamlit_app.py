@@ -10,7 +10,8 @@ from datetime import datetime, timedelta
 # GLOBAL SETUP
 # ─────────────────────────────────────────────────────────────────────────────
 
-RAPIDAPI_KEY = "41a4c82369msha52a319dc9ed7fcp1dc251jsn822df539c4cd"
+RAPIDAPI_KEY = "ee57d87135mshd9fd1d61e9d7af6p10cd23jsn12a7f548c63d
+"
 HEADERS = {
     "x-rapidapi-key": RAPIDAPI_KEY,
     "x-rapidapi-host": "sofascore.p.rapidapi.com",
@@ -138,16 +139,14 @@ def get_cached_team_stats(team_id, tournament_id, season_id):
 
 
 def save_team_stats(stats_row: dict):
-    df   = _load_csv(CACHE_TEAM_STATS)
-    mask = (
-        (df["team_id"]       == stats_row["team_id"]) &
-        (df["tournament_id"] == stats_row["tournament_id"]) &
-        (df["season_id"]     == stats_row["season_id"])
-    ) if not df.empty else pd.Series([], dtype=bool)
-    if not df.empty and mask.any():
-        df.loc[mask, list(stats_row.keys())] = list(stats_row.values())
-    else:
-        df = pd.concat([df, pd.DataFrame([stats_row])], ignore_index=True)
+    df = _load_csv(CACHE_TEAM_STATS)
+    if not df.empty:
+        df = df[~(
+            (df["team_id"].astype(str)       == str(stats_row["team_id"])) &
+            (df["tournament_id"].astype(str) == str(stats_row["tournament_id"])) &
+            (df["season_id"].astype(str)     == str(stats_row["season_id"]))
+        )]
+    df = pd.concat([df, pd.DataFrame([stats_row])], ignore_index=True)
     _save_csv(df, CACHE_TEAM_STATS)
 
 
@@ -170,14 +169,12 @@ def get_cached_team_search(team_name: str):
 
 
 def save_team_search(query: str, team_id: int, team_name: str):
-    df   = _load_csv(CACHE_TEAM_SEARCH)
-    mask = df["query"].str.lower() == query.strip().lower() if not df.empty else pd.Series([], dtype=bool)
-    row  = {"query": query.strip().lower(), "team_id": team_id,
-            "team_name": team_name, "cached_date": _today()}
-    if not df.empty and mask.any():
-        df.loc[mask, list(row.keys())] = list(row.values())
-    else:
-        df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+    df  = _load_csv(CACHE_TEAM_SEARCH)
+    row = {"query": query.strip().lower(), "team_id": int(team_id),
+           "team_name": str(team_name), "cached_date": _today()}
+    if not df.empty:
+        df = df[df["query"].str.lower() != query.strip().lower()]
+    df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
     _save_csv(df, CACHE_TEAM_SEARCH)
 
 
@@ -199,14 +196,12 @@ def get_cached_team_league(team_id: int):
 
 
 def save_team_league(team_id: int, tournament_id: str, season_id: str, league_name: str):
-    df   = _load_csv(CACHE_TEAM_LEAGUE)
-    mask = df["team_id"] == int(team_id) if not df.empty else pd.Series([], dtype=bool)
-    row  = {"team_id": int(team_id), "tournament_id": tournament_id,
-            "season_id": season_id, "league_name": league_name, "cached_date": _today()}
-    if not df.empty and mask.any():
-        df.loc[mask, list(row.keys())] = list(row.values())
-    else:
-        df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+    df  = _load_csv(CACHE_TEAM_LEAGUE)
+    row = {"team_id": int(team_id), "tournament_id": str(tournament_id),
+           "season_id": str(season_id), "league_name": str(league_name), "cached_date": _today()}
+    if not df.empty:
+        df = df[df["team_id"] != int(team_id)]  # drop old, append fresh
+    df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
     _save_csv(df, CACHE_TEAM_LEAGUE)
 
 
