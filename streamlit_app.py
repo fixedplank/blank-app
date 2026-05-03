@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 # GLOBAL SETUP
 # ─────────────────────────────────────────────────────────────────────────────
 
-RAPIDAPI_KEY = "d1e63f6e58msh1a98cabf1e23a98p1a7faajsncd49576bd6ba"
+RAPIDAPI_KEY = "41a4c82369msha52a319dc9ed7fcp1dc251jsn822df539c4cd"
 HEADERS = {
     "x-rapidapi-key": RAPIDAPI_KEY,
     "x-rapidapi-host": "sofascore.p.rapidapi.com",
@@ -18,25 +18,48 @@ HEADERS = {
 }
 BASE_URL = "https://sofascore.p.rapidapi.com"
 
-# ── Rate limiting ─────────────────────────────────────────────────────────────
+# ── Rate limiting & retry ─────────────────────────────────────────────────────
 import time
 
 _last_request_time = 0.0
-RATE_LIMIT_SECONDS = 1.2   # BASIC plan: 1 req/sec — we use 1.2s for safety margin
+MIN_INTERVAL   = 2.0   # seconds between every request (BASIC plan is strict)
+MAX_RETRIES    = 4     # retry up to 4 times on rate-limit responses
+BACKOFF_BASE   = 3.0   # first retry waits 3s, then 6s, 12s, 24s
 
 def _api_get(url: str, params: dict = None) -> dict:
-    """Throttled wrapper around requests.get — enforces RATE_LIMIT_SECONDS between calls."""
+    """Throttled + retrying wrapper. Waits MIN_INTERVAL between calls,
+    and backs off exponentially on 429 / Too many requests responses."""
     global _last_request_time
+    # Enforce minimum gap between any two requests
     elapsed = time.time() - _last_request_time
-    if elapsed < RATE_LIMIT_SECONDS:
-        time.sleep(RATE_LIMIT_SECONDS - elapsed)
-    try:
-        r = requests.get(url, headers=HEADERS, params=params or {})
-        _last_request_time = time.time()
-        return r.json()
-    except Exception as e:
-        _last_request_time = time.time()
-        return {}
+    if elapsed < MIN_INTERVAL:
+        time.sleep(MIN_INTERVAL - elapsed)
+
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            r = requests.get(url, headers=HEADERS, params=params or {}, timeout=15)
+            _last_request_time = time.time()
+            data = r.json()
+            # Detect rate-limit response body (RapidAPI returns 200 with error payload)
+            msg = str(data.get("message", "")).lower()
+            if r.status_code == 429 or "too many" in msg or "rate limit" in msg or "exceeded" in msg:
+                if attempt < MAX_RETRIES:
+                    wait = BACKOFF_BASE * (2 ** attempt)
+                    st.warning(f"⏳ Rate limited — waiting {wait:.0f}s before retry {attempt+1}/{MAX_RETRIES}...")
+                    time.sleep(wait)
+                    continue
+                else:
+                    st.error("❌ Still rate limited after retries. Try again in a minute.")
+                    return {}
+            return data
+        except Exception as e:
+            _last_request_time = time.time()
+            if attempt < MAX_RETRIES:
+                wait = BACKOFF_BASE * (2 ** attempt)
+                time.sleep(wait)
+                continue
+            return {}
+    return {}
 
 # ── Cache file paths ──────────────────────────────────────────────────────────
 CACHE_TEAM_STATS    = "team_stats_cache.csv"       # season stats per team
