@@ -12,7 +12,7 @@ import difflib  # <--- ADD THIS
 # GLOBAL SETUP  —  API-Football v3 via RapidAPI
 # ─────────────────────────────────────────────────────────────────────────────
 
-API_KEY = "66d8a9250fd21dd31b4cf58b37dd4bd6"
+API_KEY = "d64e0229aa52cfc01e76c279c1347d12"
 HEADERS = {
     "x-apisports-key": API_KEY,
 }
