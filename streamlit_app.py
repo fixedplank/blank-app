@@ -6,6 +6,7 @@ import os
 import numpy as np
 import time
 from datetime import datetime
+import difflib  # <--- ADD THIS
 
 # ─────────────────────────────────────────────────────────────────────────────
 # GLOBAL SETUP  —  API-Football v3 via RapidAPI
