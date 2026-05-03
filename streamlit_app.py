@@ -239,22 +239,87 @@ def _save_matches(team_id, rows):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def search_team(name: str, force=False):
-    """Returns (team_id, team_name, league_id, season) or (None,None,None,None)."""
+    """Returns (team_id, team_name, league_id, season) or (None,None,None,None).
+    Uses cascading fallback searches and fuzzy string matching to fix spelling errors."""
     if not force:
         cached = _cached_search(name)
         if cached:
             st.markdown('<span class="cache-badge">💾 CACHED — team search</span>', unsafe_allow_html=True)
             return cached
 
-    data = _api_get("teams", {"search": name})
-    st.markdown('<span class="api-badge">🌐 API — team search</span>', unsafe_allow_html=True)
-    results = data.get("response", [])
+    low = name.lower().strip()
+    aliases = {
+        "man united": "Manchester United", "man utd": "Manchester United",
+        "man city": "Manchester City", "spurs": "Tottenham",
+        "barca": "Barcelona", "betis": "Real Betis", "wolves": "Wolverhampton",
+        "nottm": "Nottingham Forest", "psg": "Paris Saint Germain",
+        "juve": "Juventus"
+    }
+
+    # Build a list of search strategies from most specific to broadest fallback
+    search_queries = []
+    if low in aliases:
+        search_queries.append(aliases[low])
+
+    search_queries.append(name) # 1. Try exact input
+
+    words = name.split()
+    longest_word = max(words, key=len) if words else name
+
+    if len(longest_word) > 4:
+        search_queries.append(longest_word) # 2. Try longest word
+
+    if len(longest_word) >= 4:
+        search_queries.append(longest_word[:4]) # 3. Try first 4 letters of longest word
+
+    # 4. Ultimate fallback: First 3 letters of the name (ignoring spaces)
+    clean_name = name.replace(" ", "")
+    if len(clean_name) >= 3:
+        search_queries.append(clean_name[:3])
+
+    # Remove duplicates while keeping the order of priority
+    seen = set()
+    search_queries = [x for x in search_queries if not (x in seen or seen.add(x))]
+
+    results = []
+    for attempt_name in search_queries:
+        if len(attempt_name) < 3:
+            continue
+        data = _api_get("teams", {"search": attempt_name})
+        results = data.get("response", [])
+        if results:
+            st.markdown(f'<span class="api-badge">🌐 API — search: "{attempt_name}"</span>', unsafe_allow_html=True)
+            break # Stop hitting the API as soon as we get a batch of results
+
     if not results:
+        st.error(f"No results found for **{name}**. We tried searching for: {', '.join(search_queries)}.")
         return None, None, None, None
 
-    team      = results[0]["team"]
-    team_id   = team["id"]
-    team_name = team["name"]
+    # --- THE MAGIC TRICK: FUZZY SORTING ---
+    # Sort the returned API results by how similar they are to the user's original typo
+    results.sort(
+        key=lambda x: difflib.SequenceMatcher(None, low, x['team']['name'].lower()).ratio(),
+        reverse=True
+    )
+
+    # Let user pick, showing the most mathematically similar team at the very top
+    if len(results) > 1:
+        # Show up to 8 closest matches
+        options = {f"{r['team']['name']} ({r['team'].get('country','')})": r for r in results[:8]}
+        
+        # We append a timestamp to the key to prevent Streamlit duplicate widget ID errors 
+        # if the same team is searched in both boxes
+        chosen_label = st.selectbox(
+            f"Matches found for '{name}'. Pick the correct team:", 
+            list(options.keys()), 
+            key=f"pick_{low}_{time.time()}"
+        )
+        chosen = options[chosen_label]
+    else:
+        chosen = results[0]
+
+    team_id   = chosen["team"]["id"]
+    team_name = chosen["team"]["name"]
 
     # Find current domestic league
     lg_data = _api_get("leagues", {"team": team_id, "current": "true", "season": CURRENT_SEASON})
@@ -266,9 +331,12 @@ def search_team(name: str, force=False):
         if entry.get("league", {}).get("type") == "League":
             league_id = entry["league"]["id"]
             break
+            
     if league_id is None and leagues:
         league_id = leagues[0]["league"]["id"]
+        
     if league_id is None:
+        st.warning(f"Found team **{team_name}** but could not detect their current league.")
         return team_id, team_name, None, None
 
     _save_search(name, team_id, team_name, league_id, CURRENT_SEASON)
