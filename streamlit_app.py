@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 # GLOBAL SETUP
 # ─────────────────────────────────────────────────────────────────────────────
 
-RAPIDAPI_KEY = "ee57d87135mshd9fd1d61e9d7af6p10cd23jsn12a7f548c63d"
+RAPIDAPI_KEY = "7c49ecc34emshd589a1cd4e55b79p1e7a34jsn279a87cab448"
 HEADERS = {
     "x-rapidapi-key": RAPIDAPI_KEY,
     "x-rapidapi-host": "sofascore.p.rapidapi.com",
